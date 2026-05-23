@@ -42,46 +42,95 @@ def telegram_gonder(mesaj):
 
 def fiyat_getir(varis):
     """
-    Aviasales v3 API - ücretsiz, token gerektirmez
-    En ucuz bilet fiyatını döner
+    Aviasales v3 get_one_way_prices endpoint
     """
-    en_ucuz_fiyat = None
-    en_ucuz_tarih = None
-
     bugun = datetime.now()
 
-    for ay_offset in range(1, 7):
-        hedef_tarih = bugun + timedelta(days=30 * ay_offset)
-        ay_str = hedef_tarih.strftime("%Y-%m")
+    # 3 farklı endpoint dene
+    endpointler = [
+        {
+            "url": "https://api.aviasales.com/aviasales/v3/get_one_way_prices",
+            "params": {
+                "origin": "ALA",
+                "destination": varis,
+                "currency": "usd",
+                "token": "pubtoken",
+                "limit": 1,
+            }
+        },
+        {
+            "url": "https://api.travelpayouts.com/v1/prices/cheap",
+            "params": {
+                "origin": "ALA",
+                "destination": varis,
+                "currency": "usd",
+                "token": "pubtoken",
+                "page": 1,
+                "limit": 1,
+            }
+        },
+        {
+            "url": "https://api.travelpayouts.com/v2/prices/month-matrix",
+            "params": {
+                "currency": "usd",
+                "origin": "ALA",
+                "destination": varis,
+                "show_to_affiliates": "true",
+                "month": (bugun + timedelta(days=30)).strftime("%Y-%m-01"),
+                "token": "pubtoken",
+            }
+        },
+    ]
 
-        url = "https://api.aviasales.com/aviasales/v3/prices_for_dates"
-        params = {
-            "origin":       "ALA",
-            "destination":  varis,
-            "departure_at": ay_str,
-            "currency":     "usd",
-            "sorting":      "price",
-            "limit":        1,
-            "token":        "pubtoken",
-        }
-
+    for ep in endpointler:
         try:
-            r = requests.get(url, params=params, timeout=10)
-            print(f"   [{ay_str}] status={r.status_code}")
+            r = requests.get(ep["url"], params=ep["params"], timeout=10)
+            raw = r.text.strip()
+            print(f"   [{ep['url'].split('/')[-1]}] status={r.status_code} raw_ilk_100={raw[:100]!r}")
+
             if r.status_code != 200:
                 continue
-            data = r.json()
-            if data.get("success") and data.get("data"):
-                fiyat = data["data"][0].get("price")
-                tarih = data["data"][0].get("departure_at", "")[:10]
-                print(f"   [{ay_str}] fiyat=${fiyat} tarih={tarih}")
-                if fiyat and (en_ucuz_fiyat is None or fiyat < en_ucuz_fiyat):
-                    en_ucuz_fiyat = fiyat
-                    en_ucuz_tarih = tarih
-        except Exception as e:
-            print(f"   [{ay_str}] hata: {e}")
 
-    return en_ucuz_fiyat, en_ucuz_tarih
+            # JSON parse dene
+            try:
+                data = r.json()
+            except Exception:
+                print(f"   JSON parse hata, raw: {raw[:200]}")
+                continue
+
+            # Farklı response formatlarını dene
+            # Format 1: {"data": {"IST": {"price": 100, ...}}}
+            if data.get("data") and isinstance(data["data"], dict):
+                hedef_data = data["data"].get(varis)
+                if hedef_data:
+                    if isinstance(hedef_data, dict):
+                        fiyat = hedef_data.get("price")
+                        tarih = hedef_data.get("depart_date", "bilinmiyor")
+                        if fiyat:
+                            return fiyat, tarih
+                    elif isinstance(hedef_data, list) and hedef_data:
+                        fiyat = hedef_data[0].get("price")
+                        tarih = hedef_data[0].get("depart_date", "bilinmiyor")
+                        if fiyat:
+                            return fiyat, tarih
+
+            # Format 2: {"data": [{"price": 100, ...}]}
+            if data.get("data") and isinstance(data["data"], list) and data["data"]:
+                fiyat = data["data"][0].get("price")
+                tarih = data["data"][0].get("depart_date", data["data"][0].get("departure_at", "bilinmiyor"))[:10]
+                if fiyat:
+                    return fiyat, tarih
+
+            # Format 3: {"price": 100, ...} direkt
+            if data.get("price"):
+                return data["price"], data.get("depart_date", "bilinmiyor")
+
+            print(f"   Tanınan format yok. Tam JSON: {str(data)[:300]}")
+
+        except Exception as e:
+            print(f"   hata: {e}")
+
+    return None, None
 
 def ucus_kontrol():
     print(f"\n{'='*50}")
@@ -91,7 +140,10 @@ def ucus_kontrol():
     firsatlar = []
     veri_gelen = 0
 
-    for rota in ROTALAR:
+    # İlk önce sadece IST ile test et
+    test_rotalar = ROTALAR[:3]  # İlk 3 rotayı test et
+
+    for rota in test_rotalar:
         hedef = rota["hedef"]
         sehir = rota["sehir"]
         esik  = rota["esik"]
@@ -104,7 +156,7 @@ def ucus_kontrol():
             continue
 
         veri_gelen += 1
-        print(f"   💰 En ucuz: ${fiyat} (eşik: ${esik}) [{tarih}]\n")
+        print(f"   ✅ En ucuz: ${fiyat} (eşik: ${esik}) [{tarih}]\n")
 
         if fiyat <= esik:
             indirim = round((1 - fiyat / esik) * 100)
@@ -113,40 +165,19 @@ def ucus_kontrol():
                 "fiyat": fiyat, "tarih": tarih,
                 "esik":  esik,  "indirim": indirim
             })
-            print(f"   🔥 FIRSAT! %{indirim} daha ucuz!")
 
-    print(f"\nToplam veri gelen rota: {veri_gelen}/{len(ROTALAR)}")
+    print(f"\nTest sonucu — veri gelen: {veri_gelen}/{len(test_rotalar)}")
 
+    # Telegram'a test sonucunu gönder
+    mesaj = (
+        f"🔧 <b>API Test Sonucu</b>\n\n"
+        f"Veri gelen: {veri_gelen}/{len(test_rotalar)} rota\n"
+    )
     if firsatlar:
-        mesaj  = "🚨 <b>UCUZ UÇUŞ FIRSATI!</b> 🚨\n\n"
-        mesaj += "📍 <b>Kalkış:</b> Almatı (ALA)\n\n"
-        for f in sorted(firsatlar, key=lambda x: x["fiyat"]):
-            mesaj += (
-                f"✈️ <b>{f['sehir']}</b>\n"
-                f"   💵 <b>${f['fiyat']}</b>  (normal ~${f['esik']})\n"
-                f"   🔥 %{f['indirim']} indirimli!\n"
-                f"   📅 {f['tarih']}\n\n"
-            )
-        mesaj += "🔗 <a href='https://www.aviasales.com/search/ALA'>Hemen bak →</a>\n"
-        mesaj += f"\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        telegram_gonder(mesaj)
-    elif veri_gelen > 0:
-        mesaj = (
-            f"✈️ <b>Günlük Rapor</b>\n\n"
-            f"📍 Kalkış: Almatı (ALA)\n"
-            f"🔍 {veri_gelen}/{len(ROTALAR)} rota kontrol edildi\n"
-            f"😴 Eşiğin altında fiyat yok.\n\n"
-            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        )
-        telegram_gonder(mesaj)
-    else:
-        mesaj = (
-            f"⚠️ <b>API Sorunu</b>\n\n"
-            f"Hiçbir rotadan veri alınamadı.\n"
-            f"Lütfen API bağlantısını kontrol edin.\n\n"
-            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        )
-        telegram_gonder(mesaj)
+        for f in firsatlar:
+            mesaj += f"\n✈️ {f['sehir']}: ${f['fiyat']}"
+    mesaj += f"\n\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    telegram_gonder(mesaj)
 
     print(f"\n{'='*50}\n")
 
