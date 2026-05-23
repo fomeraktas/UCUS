@@ -1,26 +1,167 @@
-name: ✈️ Uçuş Fiyat Kontrolü
+import os
+import requests
+from datetime import datetime, timedelta
 
-on:
-  schedule:
-    - cron: '0 0,6,12,18 * * *'
-  workflow_dispatch:
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "8912653563:AAFXKvL3pxm_YM0kOR2WfHxrC3HO43fIXzQ")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6604274615")
+TP_TOKEN         = os.environ.get("TP_TOKEN",         "da9c5980e5f451f6be1fdd3eea455b62")
 
-jobs:
-  ucus-kontrol:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Kodu İndir
-        uses: actions/checkout@v4
-      - name: 🐍 Python Kur
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: 📦 Kütüphaneleri Yükle
-        run: pip install requests
-      - name: ✈️ Uçuş Fiyatlarını Kontrol Et
-        env:
-          AVIATION_KEY: ${{ secrets.AVIATION_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TP_TOKEN: ${{ secrets.TP_TOKEN }}
-        run: python ucus_alarm.py
+ROTALAR = [
+    {"hedef": "IST", "sehir": "İstanbul 🇹🇷",       "esik": 150},
+    {"hedef": "NRT", "sehir": "Tokyo 🇯🇵",           "esik": 500},
+    {"hedef": "BKK", "sehir": "Bangkok 🇹🇭",         "esik": 300},
+    {"hedef": "DXB", "sehir": "Dubai 🇦🇪",           "esik": 200},
+    {"hedef": "KUL", "sehir": "Kuala Lumpur 🇲🇾",    "esik": 300},
+    {"hedef": "SIN", "sehir": "Singapur 🇸🇬",        "esik": 400},
+    {"hedef": "ICN", "sehir": "Seul 🇰🇷",            "esik": 400},
+    {"hedef": "DOH", "sehir": "Doha 🇶🇦",            "esik": 200},
+    {"hedef": "TAS", "sehir": "Taşkent 🇺🇿",         "esik": 80},
+    {"hedef": "TBS", "sehir": "Tiflis 🇬🇪",          "esik": 120},
+    {"hedef": "GYD", "sehir": "Bakü 🇦🇿",            "esik": 120},
+    {"hedef": "CMN", "sehir": "Kazablanka 🇲🇦",      "esik": 400},
+    {"hedef": "TUN", "sehir": "Tunus 🇹🇳",           "esik": 350},
+    {"hedef": "SEZ", "sehir": "Seyşeller 🇸🇨",       "esik": 600},
+    {"hedef": "BEG", "sehir": "Belgrad 🇷🇸",         "esik": 300},
+]
+
+def telegram_gonder(mesaj):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        r = requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": mesaj,
+            "parse_mode": "HTML"
+        }, timeout=10)
+        if r.status_code == 200:
+            print("✅ Telegram mesajı gönderildi!")
+        else:
+            print(f"❌ Telegram hatası: {r.text}")
+    except Exception as e:
+        print(f"❌ Telegram bağlantı hatası: {e}")
+
+def fiyat_getir(varis):
+    # 1. DENEME: En ucuz biletler
+    try:
+        r = requests.get(
+            "https://api.travelpayouts.com/v1/prices/cheap",
+            params={
+                "origin": "ALA",
+                "destination": varis,
+                "currency": "usd",
+                "token": TP_TOKEN,
+            },
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            hedef_data = data.get("data", {}).get(varis)
+            if hedef_data:
+                en_ucuz = min(hedef_data.values(), key=lambda x: x.get("price", 999999))
+                fiyat = en_ucuz.get("price")
+                # Tarihi doğru al
+                tarih = en_ucuz.get("depart_date") or en_ucuz.get("found_at", "")[:10] or "—"
+                if fiyat:
+                    print(f"   ✅ ${fiyat} — {tarih}")
+                    return fiyat, tarih
+    except Exception as e:
+        print(f"   [cheap] hata: {e}")
+
+    # 2. DENEME: Aylık en ucuz fiyatlar
+    bugun = datetime.now()
+    en_ucuz_fiyat = None
+    en_ucuz_tarih = None
+
+    try:
+        for ay_offset in range(1, 7):
+            ay = (bugun + timedelta(days=30 * ay_offset)).strftime("%Y-%m-01")
+            r = requests.get(
+                "https://api.travelpayouts.com/v2/prices/month-matrix",
+                params={
+                    "currency": "usd",
+                    "origin": "ALA",
+                    "destination": varis,
+                    "show_to_affiliates": "true",
+                    "month": ay,
+                    "token": TP_TOKEN,
+                },
+                timeout=10
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("data"):
+                    ay_en_ucuz = min(data["data"], key=lambda x: x.get("price", 999999))
+                    fiyat = ay_en_ucuz.get("price")
+                    tarih = ay_en_ucuz.get("depart_date") or ay[:7]
+                    if fiyat and (en_ucuz_fiyat is None or fiyat < en_ucuz_fiyat):
+                        en_ucuz_fiyat = fiyat
+                        en_ucuz_tarih = tarih
+
+        if en_ucuz_fiyat:
+            print(f"   ✅ ${en_ucuz_fiyat} — {en_ucuz_tarih}")
+            return en_ucuz_fiyat, en_ucuz_tarih
+    except Exception as e:
+        print(f"   [month-matrix] hata: {e}")
+
+    return None, None
+
+def ucus_kontrol():
+    print(f"\n{'='*50}")
+    print(f"🔍 Kontrol: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    print(f"{'='*50}\n")
+
+    firsatlar = []
+    sonuclar = []
+    veri_gelen = 0
+
+    for rota in ROTALAR:
+        hedef = rota["hedef"]
+        sehir = rota["sehir"]
+        esik  = rota["esik"]
+
+        print(f"🔎 ALA → {hedef} ({sehir})...")
+        fiyat, tarih = fiyat_getir(hedef)
+
+        if fiyat is None:
+            print(f"   ⚠️  Veri yok\n")
+            continue
+
+        veri_gelen += 1
+        print(f"   💰 ${fiyat} (eşik: ${esik}) [{tarih}]\n")
+        sonuclar.append({"sehir": sehir, "hedef": hedef, "fiyat": fiyat, "tarih": tarih, "esik": esik})
+
+        if fiyat <= esik:
+            indirim = round((1 - fiyat / esik) * 100)
+            firsatlar.append({**rota, "fiyat": fiyat, "tarih": tarih, "indirim": indirim})
+
+    print(f"Toplam veri gelen: {veri_gelen}/{len(ROTALAR)}")
+
+    if firsatlar:
+        mesaj  = "🚨 <b>UCUZ UÇUŞ FIRSATI!</b> 🚨\n\n"
+        mesaj += "📍 <b>Kalkış:</b> Almatı (ALA)\n\n"
+        for f in sorted(firsatlar, key=lambda x: x["fiyat"]):
+            mesaj += (
+                f"✈️ <b>{f['sehir']}</b>\n"
+                f"   💵 <b>${f['fiyat']}</b>  (normal ~${f['esik']})\n"
+                f"   🔥 %{f['indirim']} indirimli!\n"
+                f"   📅 {f['tarih']}\n\n"
+            )
+        mesaj += "🔗 <a href='https://www.aviasales.com/search/ALA'>Hemen bak →</a>\n"
+        mesaj += f"\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        telegram_gonder(mesaj)
+
+    else:
+        # Fırsat yok — günlük özet gönder
+        mesaj = "✈️ <b>Günlük Uçuş Raporu</b>\n\n"
+        mesaj += "📍 <b>Kalkış:</b> Almatı (ALA)\n\n"
+        mesaj += "<b>Mevcut en ucuz fiyatlar:</b>\n"
+        for s in sorted(sonuclar, key=lambda x: x["fiyat"]):
+            emoji = "🟢" if s["fiyat"] <= s["esik"] * 1.2 else "🔴"
+            mesaj += f"{emoji} {s['sehir']}: <b>${s['fiyat']}</b>\n"
+        mesaj += f"\n😴 Eşiğin altında fiyat yok.\n"
+        mesaj += f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        telegram_gonder(mesaj)
+
+    print(f"\n{'='*50}\n")
+
+if __name__ == "__main__":
+    ucus_kontrol()
