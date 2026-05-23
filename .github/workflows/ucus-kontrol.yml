@@ -1,10 +1,8 @@
 name: Ucus Fiyat Kontrolu
-
 on:
   schedule:
     - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
-
 jobs:
   ucus-kontrol:
     runs-on: ubuntu-latest
@@ -17,9 +15,8 @@ jobs:
           python-version: '3.11'
       - name: Kutuphaneleri Yukle
         run: pip install requests
-      - name: Ucus Fiyatlarini Kontrol Et
+      - name: Ucus Kontrolu
         env:
-          AVIATION_KEY: ${{ secrets.AVIATION_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TP_TOKEN: ${{ secrets.TP_TOKEN }}
