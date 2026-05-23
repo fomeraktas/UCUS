@@ -22,4 +22,5 @@ jobs:
           AVIATION_KEY: ${{ secrets.AVIATION_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TP_TOKEN: ${{ secrets.TP_TOKEN }}
         run: python ucus_alarm.py
